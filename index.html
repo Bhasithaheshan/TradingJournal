@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Journal · Trading Performance Tracker</title>
+
+<!-- Google Fonts: Inter for UI, JetBrains Mono for numeric/trading data -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ BACKGROUND DECOR ============ -->
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-glow" aria-hidden="true"></div>
+
+<!-- ============ TOP NAVBAR ============ -->
+<header class="navbar">
+  <div class="navbar__brand">
+    <span class="navbar__mark">◆</span>
+    <span class="navbar__title">Journal</span>
+    <span class="navbar__tag">Trading Performance</span>
+  </div>
+
+  <nav class="navbar__tabs" id="navTabs">
+    <button class="navtab is-active" data-view="dashboard">Overview</button>
+    <button class="navtab" data-view="log">Trade Log</button>
+    <button class="navtab" data-view="analytics">Analytics</button>
+  </nav>
+
+  <div class="navbar__actions">
+    <button class="btn btn--ghost" id="btnImport" title="Import CSV">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 3a1 1 0 0 1 1 1v9.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42l2.3 2.3V4a1 1 0 0 1 1-1zM5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z"/></svg>
+      <span>Import</span>
+    </button>
+    <button class="btn btn--ghost" id="btnExport" title="Export CSV">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 15a1 1 0 0 1-1-1V4.41l-2.3 2.3A1 1 0 1 1 7.3 5.3l4-4a1 1 0 0 1 1.4 0l4 4a1 1 0 1 1-1.4 1.42L13 4.41V14a1 1 0 0 1-1 1zM5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z"/></svg>
+      <span>Export</span>
+    </button>
+    <button class="btn btn--primary" id="btnAddTrade">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 5a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H6a1 1 0 1 1 0-2h5V6a1 1 0 0 1 1-1z"/></svg>
+      <span>Add Trade</span>
+    </button>
+  </div>
+
+  <button class="navbar__burger" id="btnBurger" aria-label="Toggle menu">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+
+<input type="file" id="csvFileInput" accept=".csv" hidden>
+
+<main class="app">
+
+  <!-- ============ DASHBOARD: STAT CARDS ============ -->
+  <section class="stats" id="viewDashboard">
+    <div class="stat-card">
+      <div class="stat-card__icon stat-card__icon--blue">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 19h16a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1V4a1 1 0 1 1 2 0v15zM7 16a1 1 0 0 1-1-1v-3a1 1 0 1 1 2 0v3a1 1 0 0 1-1 1zm5 0a1 1 0 0 1-1-1V9a1 1 0 1 1 2 0v6a1 1 0 0 1-1 1zm5 0a1 1 0 0 1-1-1V6a1 1 0 1 1 2 0v9a1 1 0 0 1-1 1z"/></svg>
+      </div>
+      <div class="stat-card__body">
+        <span class="stat-card__label">Total Trades</span>
+        <span class="stat-card__value" id="statTotal">0</span>
+      </div>
+    </div>
+
+    <div class="stat-card">
+      <div class="stat-card__icon stat-card__icon--green">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 14l5-5 4 4 7-7v4h2V3h-7v2h4l-6 6-4-4-6.7 6.7z"/></svg>
+      </div>
+      <div class="stat-card__body">
+        <span class="stat-card__label">Wins</span>
+        <span class="stat-card__value stat-card__value--green" id="statWins">0</span>
+      </div>
+    </div>
+
+    <div class="stat-card">
+      <div class="stat-card__icon stat-card__icon--red">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 6l5 5 4-4 7 7v-4h2v7h-7v-2h4l-6-6-4 4-6.7-6.7z"/></svg>
+      </div>
+      <div class="stat-card__body">
+        <span class="stat-card__label">Losses</span>
+        <span class="stat-card__value stat-card__value--red" id="statLosses">0</span>
+      </div>
+    </div>
+
+    <div class="stat-card">
+      <div class="stat-card__icon stat-card__icon--amber">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+      </div>
+      <div class="stat-card__body">
+        <span class="stat-card__label">Win Rate</span>
+        <span class="stat-card__value" id="statWinRate">0%</span>
+      </div>
+      <div class="stat-card__bar"><span id="statWinRateBar"></span></div>
+    </div>
+
+    <div class="stat-card stat-card--wide">
+      <div class="stat-card__icon stat-card__icon--purple">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 1a1 1 0 0 1 1 1v1.06a5 5 0 0 1 4 4.94 1 1 0 1 1-2 0 3 3 0 0 0-3-3H11a2.5 2.5 0 0 0 0 5h2a4.5 4.5 0 0 1 0 9h-.06V20a1 1 0 1 1-2 0v-1.06a5 5 0 0 1-4-4.94 1 1 0 1 1 2 0 3 3 0 0 0 3 3h1a2.5 2.5 0 0 0 0-5h-2a4.5 4.5 0 0 1 0-9H11V2a1 1 0 0 1 1-1z"/></svg>
+      </div>
+      <div class="stat-card__body">
+        <span class="stat-card__label">Total P/L</span>
+        <span class="stat-card__value" id="statPL">$0.00</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TRADE LOG ============ -->
+  <section class="panel" id="viewLog">
+    <div class="panel__header">
+      <h2>Trade Log</h2>
+
+      <div class="toolbar">
+        <div class="field field--search">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M10 2a8 8 0 1 0 4.9 14.32l5.39 5.38a1 1 0 0 0 1.42-1.4l-5.39-5.4A8 8 0 0 0 10 2zm-6 8a6 6 0 1 1 12 0 6 6 0 0 1-12 0z"/></svg>
+          <input type="text" id="searchPair" placeholder="Search pair…">
+        </div>
+
+        <select id="filterResult" class="field field--select">
+          <option value="ALL">All Results</option>
+          <option value="WIN">Win</option>
+          <option value="LOSS">Loss</option>
+          <option value="BE">Break-even</option>
+        </select>
+
+        <select id="sortDate" class="field field--select">
+          <option value="desc">Newest first</option>
+          <option value="asc">Oldest first</option>
+        </select>
+
+        <button class="btn btn--danger btn--sm" id="btnClearAll">Clear All</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="trade-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Pair</th>
+            <th>Dir</th>
+            <th>Setup</th>
+            <th>TF</th>
+            <th>Entry</th>
+            <th>SL</th>
+            <th>TP</th>
+            <th>Lot</th>
+            <th>Result</th>
+            <th>P/L</th>
+            <th>RR</th>
+            <th>Shot</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tradeTableBody">
+          <!-- rows injected by script.js -->
+        </tbody>
+      </table>
+
+      <div class="empty-state" id="emptyState">
+        <svg viewBox="0 0 24 24" width="42" height="42"><path fill="currentColor" d="M4 19h16a1 1 0 1 1 0 2H4a1 1 0 0 1-1-1V4a1 1 0 1 1 2 0v15zM7 15a1 1 0 0 1-1-1v-1a1 1 0 1 1 2 0v1a1 1 0 0 1-1 1zm5 0a1 1 0 0 1-1-1V9a1 1 0 1 1 2 0v5a1 1 0 0 1-1 1zm5 0a1 1 0 0 1-1-1V6a1 1 0 1 1 2 0v8a1 1 0 0 1-1 1z"/></svg>
+        <p>No trades logged yet</p>
+        <span>Click "Add Trade" to record your first entry.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ANALYTICS ============ -->
+  <section class="panel" id="viewAnalytics">
+    <div class="panel__header">
+      <h2>Analytics</h2>
+    </div>
+
+    <div class="charts-grid">
+      <div class="chart-card chart-card--wide">
+        <h3>Equity Curve</h3>
+        <div class="chart-canvas-wrap"><canvas id="equityChart"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <h3>Win / Loss Split</h3>
+        <div class="chart-canvas-wrap"><canvas id="winLossChart"></canvas></div>
+      </div>
+      <div class="chart-card chart-card--wide">
+        <h3>Monthly Profit</h3>
+        <div class="chart-canvas-wrap"><canvas id="monthlyChart"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============ ADD / EDIT TRADE MODAL ============ -->
+<div class="modal-overlay" id="tradeModalOverlay">
+  <div class="modal">
+    <div class="modal__header">
+      <h3 id="modalTitle">Add Trade</h3>
+      <button class="modal__close" id="btnCloseModal" aria-label="Close">&times;</button>
+    </div>
+
+    <form id="tradeForm" class="modal__body">
+      <input type="hidden" id="tradeId">
+
+      <div class="form-grid">
+        <div class="form-field">
+          <label for="fDate">Date</label>
+          <input type="date" id="fDate" required>
+        </div>
+
+        <div class="form-field">
+          <label for="fPair">Pair</label>
+          <select id="fPair" required>
+            <option value="GOLD">GOLD</option>
+            <option value="EURUSD">EURUSD</option>
+            <option value="GBPUSD">GBPUSD</option>
+            <option value="BTCUSD">BTCUSD</option>
+            <option value="US30">US30</option>
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label for="fDirection">Direction</label>
+          <select id="fDirection" required>
+            <option value="BUY">BUY</option>
+            <option value="SELL">SELL</option>
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label for="fTimeframe">Timeframe</label>
+          <select id="fTimeframe" required>
+            <option value="1m">1m</option>
+            <option value="5m">5m</option>
+            <option value="15m">15m</option>
+            <option value="30m">30m</option>
+            <option value="1H">1H</option>
+          </select>
+        </div>
+
+        <div class="form-field form-field--wide">
+          <label for="fSetup">Setup</label>
+          <input type="text" id="fSetup" placeholder="e.g. Order block retest, breakout…">
+        </div>
+
+        <div class="form-field">
+          <label for="fEntry">Entry</label>
+          <input type="number" id="fEntry" step="any" required>
+        </div>
+
+        <div class="form-field">
+          <label for="fSL">Stop Loss</label>
+          <input type="number" id="fSL" step="any" required>
+        </div>
+
+        <div class="form-field">
+          <label for="fTP">Take Profit</label>
+          <input type="number" id="fTP" step="any" required>
+        </div>
+
+        <div class="form-field">
+          <label for="fLot">Lot Size</label>
+          <input type="number" id="fLot" step="any" required>
+        </div>
+
+        <div class="form-field">
+          <label for="fResult">Result</label>
+          <select id="fResult" required>
+            <option value="WIN">WIN</option>
+            <option value="LOSS">LOSS</option>
+            <option value="BE">BE</option>
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label for="fPL">P/L ($)</label>
+          <input type="number" id="fPL" step="any" placeholder="-50 or 120" required>
+        </div>
+
+        <div class="form-field">
+          <label>Risk / Reward <span class="auto-tag">auto</span></label>
+          <input type="text" id="fRR" readonly placeholder="—">
+        </div>
+
+        <div class="form-field form-field--wide">
+          <label for="fScreenshot">Screenshot</label>
+          <input type="file" id="fScreenshot" accept="image/*">
+          <div class="shot-preview" id="shotPreview"></div>
+        </div>
+      </div>
+
+      <div class="modal__footer">
+        <button type="button" class="btn btn--ghost" id="btnCancelModal">Cancel</button>
+        <button type="submit" class="btn btn--primary" id="btnSaveTrade">Save Trade</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ============ SCREENSHOT LIGHTBOX ============ -->
+<div class="lightbox-overlay" id="lightboxOverlay">
+  <button class="lightbox-close" id="lightboxClose" aria-label="Close">&times;</button>
+  <img id="lightboxImg" alt="Trade screenshot">
+</div>
+
+<!-- ============ CONFIRM DIALOG ============ -->
+<div class="confirm-overlay" id="confirmOverlay">
+  <div class="confirm-box">
+    <h3 id="confirmTitle">Are you sure?</h3>
+    <p id="confirmMessage">This action cannot be undone.</p>
+    <div class="confirm-actions">
+      <button class="btn btn--ghost" id="confirmCancel">Cancel</button>
+      <button class="btn btn--danger" id="confirmOk">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ TOAST ============ -->
+<div class="toast" id="toast"></div>
+
+<!-- Chart.js from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="script.js"></script>
+</body>
+</html>

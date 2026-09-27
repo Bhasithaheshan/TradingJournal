@@ -573,9 +573,38 @@
   }
 
   function renderCharts() {
-    renderEquityChart();
-    renderWinLossChart();
-    renderMonthlyChart();
+    // Guard: if Chart.js hasn't loaded (blocked CDN, offline, ad-blocker, etc.)
+    // show a clear inline message in each chart card instead of leaving a
+    // silently blank box, and bail out without throwing.
+    if (typeof Chart === 'undefined') {
+      showChartLoadError();
+      return;
+    }
+    try {
+      clearChartLoadError();
+      renderEquityChart();
+      renderWinLossChart();
+      renderMonthlyChart();
+    } catch (err) {
+      // A chart error should never take down the rest of the app (table,
+      // stats, modals must keep working even if charting fails).
+      console.error('Chart rendering failed:', err);
+      showChartLoadError();
+    }
+  }
+
+  function showChartLoadError() {
+    $$('.chart-canvas-wrap').forEach((wrap) => {
+      if (wrap.querySelector('.chart-error')) return; // already shown
+      const msg = document.createElement('div');
+      msg.className = 'chart-error';
+      msg.textContent = 'Charts could not load (Chart.js was blocked or failed to load). Check your connection or ad-blocker, then refresh.';
+      wrap.appendChild(msg);
+    });
+  }
+
+  function clearChartLoadError() {
+    $$('.chart-error').forEach((n) => n.remove());
   }
 
   function renderEquityChart() {
@@ -779,4 +808,12 @@
   }
 
   document.addEventListener('DOMContentLoaded', init);
+
+  // If Chart.js loads asynchronously (e.g. the primary CDN was blocked and
+  // the fallback CDN loaded afterwards), re-render charts once it's ready.
+  document.addEventListener('chartjsready', renderCharts);
+  document.addEventListener('chartjsfailed', () => {
+    console.error('Both Chart.js CDNs failed to load.');
+    showChartLoadError();
+  });
 })();

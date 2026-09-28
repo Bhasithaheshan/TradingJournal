@@ -62,6 +62,8 @@
     fId: $('#tradeId'),
     fDate: $('#fDate'),
     fPair: $('#fPair'),
+    fPairOther: $('#fPairOther'),
+    pairOtherWrap: $('#pairOtherWrap'),
     fDirection: $('#fDirection'),
     fTimeframe: $('#fTimeframe'),
     fSetup: $('#fSetup'),
@@ -271,6 +273,7 @@
     el.fDate.value = new Date().toISOString().slice(0, 10);
     el.fRR.value = '—';
     el.shotPreview.innerHTML = '';
+    togglePairOther();
     openOverlay(el.overlay);
   }
 
@@ -283,7 +286,12 @@
     el.modalTitle.textContent = 'Edit Trade';
     el.fId.value = t.id;
     el.fDate.value = t.date;
-    el.fPair.value = t.pair;
+    // Pairs outside the preset list are shown via the "Other…" option
+    const isPreset = Array.from(el.fPair.options).some((o) => o.value === t.pair && o.value !== 'OTHER');
+    el.fPair.value = isPreset ? t.pair : 'OTHER';
+    el.pairOtherWrap.hidden = isPreset;
+    el.fPairOther.required = !isPreset;
+    el.fPairOther.value = isPreset ? '' : t.pair;
     el.fDirection.value = t.direction;
     el.fTimeframe.value = t.timeframe;
     el.fSetup.value = t.setup || '';
@@ -308,6 +316,22 @@
     pendingScreenshot = null;
   }
 
+  /** Show the custom-pair input only when "Other…" is selected. */
+  function togglePairOther() {
+    const isOther = el.fPair.value === 'OTHER';
+    el.pairOtherWrap.hidden = !isOther;
+    el.fPairOther.required = isOther;
+    if (!isOther) el.fPairOther.value = '';
+    else el.fPairOther.focus();
+  }
+
+  /** Resolve the pair value: preset from dropdown, or the typed custom pair. */
+  function getSelectedPair() {
+    return el.fPair.value === 'OTHER'
+      ? el.fPairOther.value.trim().toUpperCase().replace(/\s+/g, '')
+      : el.fPair.value;
+  }
+
   function updateRRPreview() {
     const rr = calcRR(el.fEntry.value, el.fSL.value, el.fTP.value);
     el.fRR.value = fmtRR(rr);
@@ -324,7 +348,7 @@
     const tradeData = {
       id: editingId || cryptoRandomId(),
       date: el.fDate.value,
-      pair: el.fPair.value,
+      pair: getSelectedPair(),
       direction: el.fDirection.value,
       setup: el.fSetup.value.trim(),
       timeframe: el.fTimeframe.value,
@@ -756,6 +780,9 @@
     el.btnCancelModal.addEventListener('click', closeModal);
     el.overlay.addEventListener('click', (e) => { if (e.target === el.overlay) closeModal(); });
     el.form.addEventListener('submit', handleFormSubmit);
+
+    // custom pair toggle
+    el.fPair.addEventListener('change', togglePairOther);
 
     // live RR preview
     [el.fEntry, el.fSL, el.fTP].forEach((input) => input.addEventListener('input', updateRRPreview));

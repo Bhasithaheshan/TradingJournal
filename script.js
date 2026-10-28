@@ -10,6 +10,14 @@
      0. CONSTANTS & STATE
   ---------------------------------------------------------- */
   const STORAGE_KEY = 'tj_trades_v1';
+  const JOURNAL_KEY = 'tj_active_journal_v1';
+  const JOURNALS_KEY = 'tj_journals_v1';
+  const JOURNAL_COLORS = ['#a06bff', '#2f6bff', '#16c784', '#f0b90b', '#f6465d', '#22d3ee', '#fb7185', '#f97316'];
+
+  /** @type {Array<{id:string,name:string,color:string}>} user-created journals */
+  let journals = [];
+  let journalDialogMode = null; // 'new' | 'rename'
+  let journalTargetId = null;   // journal staged for deletion
 
   /** @type {Array<Object>} in-memory list of trades, synced to localStorage */
   let trades = [];
@@ -19,6 +27,7 @@
     search: '',
     resultFilter: 'ALL',
     dateSort: 'desc',
+    journal: 'ALL',   // 'ALL' | 'INDICATOR' | 'MANUAL'
   };
 
   let editingId = null;         // id of trade currently being edited, or null when adding
@@ -60,6 +69,8 @@
     btnCancelModal: $('#btnCancelModal'),
 
     fId: $('#tradeId'),
+    fJournal: $('#fJournal'),
+    journalSwitch: $('#journalSwitch'),
     fDate: $('#fDate'),
     fPair: $('#fPair'),
     fPairOther: $('#fPairOther'),
@@ -114,6 +125,182 @@
       console.error('Failed to load trades from localStorage', e);
       trades = [];
     }
+
+    loadJournals();
+
+    try {
+      const saved = localStorage.getItem(JOURNAL_KEY);
+      if (saved === 'ALL' || journalById(saved)) ui.journal = saved;
+    } catch (e) { /* ignore */ }
+  }
+
+  /* ----- journal helpers ----- */
+  function saveJournals() {
+    try {
+      localStorage.setItem(JOURNALS_KEY, JSON.stringify(journals));
+    } catch (e) {
+      showToast('Storage error: could not save journals', true);
+    }
+  }
+  function newJournalId() { return 'j_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
+  function nextJournalColor() { return JOURNAL_COLORS[journals.length % JOURNAL_COLORS.length]; }
+  function journalById(id) { return journals.find((j) => j.id === id) || null; }
+  function journalName(id) { const j = journalById(id); return j ? j.name : '—'; }
+  function journalColor(id) { const j = journalById(id); return j ? j.color : '#8b93a8'; }
+
+  function loadJournals() {
+    try {
+      const raw = localStorage.getItem(JOURNALS_KEY);
+      journals = raw ? JSON.parse(raw) : [];
+    } catch (e) { journals = []; }
+    if (!Array.isArray(journals)) journals = [];
+
+    let journalsChanged = false;
+    let tradesChanged = false;
+
+    // First run with custom journals: rebuild from whatever the trades already use
+    // (this also picks up the earlier fixed "INDICATOR" / "MANUAL" values).
+    if (journals.length === 0) {
+      const legacyNames = { INDICATOR: 'Indicator', MANUAL: 'Manual' };
+      trades.forEach((t) => {
+        if (t.journal && !journalById(t.journal)) {
+          journals.push({ id: t.journal, name: legacyNames[t.journal] || String(t.journal), color: nextJournalColor() });
+          journalsChanged = true;
+        }
+      });
+    }
+
+    // Trades with no journal (or an unknown one) go into "Main"
+    trades.forEach((t) => {
+      if (!journalById(t.journal)) {
+        let main = journals.find((j) => j.name === 'Main');
+        if (!main) {
+          main = { id: newJournalId(), name: 'Main', color: nextJournalColor() };
+          journals.push(main);
+          journalsChanged = true;
+        }
+        t.journal = main.id;
+        tradesChanged = true;
+      }
+    });
+
+    // There must always be at least one journal
+    if (journals.length === 0) {
+      journals.push({ id: newJournalId(), name: 'Main', color: nextJournalColor() });
+      journalsChanged = true;
+    }
+
+    if (journalsChanged) saveJournals();
+    if (tradesChanged) saveTrades();
+  }
+
+  function populateJournalSelect() {
+    el.fJournal.innerHTML = journals
+      .map((j) => `<option value="${j.id}">${escapeHtml(j.name)}</option>`)
+      .join('');
+  }
+
+  /** Name dialog (shared by "New journal" and "Rename"). */
+  function openJournalDialog(mode) {
+    journalDialogMode = mode;
+    const input = $('#journalNameInput');
+    $('#journalNameTitle').textContent = mode === 'rename' ? 'Rename journal' : 'New journal';
+    $('#journalNameOk').textContent = mode === 'rename' ? 'Save' : 'Create';
+    input.value = mode === 'rename' ? journalName(ui.journal) : '';
+    openOverlay($('#journalNameOverlay'));
+    setTimeout(() => { input.focus(); input.select(); }, 50);
+  }
+
+  function handleJournalNameSubmit(e) {
+    e.preventDefault();
+    const name = $('#journalNameInput').value.trim();
+    if (!name) return;
+    const clash = journals.some((j) =>
+      j.name.toLowerCase() === name.toLowerCase() && !(journalDialogMode === 'rename' && j.id === ui.journal));
+    if (clash) { showToast('A journal with that name already exists', true); return; }
+
+    closeOverlay($('#journalNameOverlay'));
+    if (journalDialogMode === 'rename') {
+      const j = journalById(ui.journal);
+      if (j) j.name = name;
+      saveJournals();
+      renderAll();
+      showToast('Journal renamed');
+    } else {
+      const j = { id: newJournalId(), name, color: nextJournalColor() };
+      journals.push(j);
+      saveJournals();
+      setJournal(j.id);
+      showToast(`Journal "${name}" created`);
+    }
+  }
+
+  function requestDeleteJournal() {
+    if (journals.length <= 1) { showToast('Keep at least one journal', true); return; }
+    journalTargetId = ui.journal;
+    const n = trades.filter((t) => t.journal === journalTargetId).length;
+    el.confirmTitle.textContent = `Delete "${journalName(journalTargetId)}" journal?`;
+    el.confirmMessage.textContent = n
+      ? `This will permanently delete this journal and its ${n} trade(s). This action cannot be undone.`
+      : 'This journal is empty and will be removed.';
+    el.confirmOk.textContent = 'Delete Journal';
+    el.confirmOk.dataset.mode = 'journal';
+    openOverlay(el.confirmOverlay);
+  }
+
+  function deleteJournal(id) {
+    trades = trades.filter((t) => t.journal !== id);
+    journals = journals.filter((j) => j.id !== id);
+    saveTrades();
+    saveJournals();
+    journalTargetId = null;
+    setJournal('ALL');
+    showToast('Journal deleted');
+  }
+
+  /** CSV import: match a journal by name (case-insensitive) or create it. */
+  function resolveImportJournal(name) {
+    const clean = (name || '').trim();
+    if (clean) {
+      let j = journals.find((x) => x.name.toLowerCase() === clean.toLowerCase());
+      if (!j) {
+        j = { id: newJournalId(), name: clean.slice(0, 24), color: nextJournalColor() };
+        journals.push(j);
+        saveJournals();
+      }
+      return j.id;
+    }
+    return ui.journal === 'ALL' ? journals[0].id : ui.journal;
+  }
+
+  /** Trades belonging to the currently selected journal ('ALL' = everything). */
+  function scopedTrades() {
+    return ui.journal === 'ALL' ? trades : trades.filter((t) => t.journal === ui.journal);
+  }
+
+  function setJournal(j) {
+    ui.journal = j;
+    try { localStorage.setItem(JOURNAL_KEY, j); } catch (e) { /* ignore */ }
+    renderAll();
+  }
+
+  function renderJournalSwitch() {
+    if (ui.journal !== 'ALL' && !journalById(ui.journal)) ui.journal = 'ALL';
+
+    const tab = (id, label, color, count) =>
+      `<button class="jtab${ui.journal === id ? ' is-active' : ''}" role="tab" data-journal="${id}" style="--jc:${color}">` +
+      `<span class="jtab__dot"></span>${escapeHtml(label)} <span class="jtab__count">${count}</span></button>`;
+
+    let html = journals
+      .map((j) => tab(j.id, j.name, j.color, trades.filter((t) => t.journal === j.id).length))
+      .join('');
+    html += tab('ALL', 'All Trades', '#f0b90b', trades.length);
+    html += '<span class="jsep"></span><button class="jtool" data-jaction="new">+ New journal</button>';
+    if (ui.journal !== 'ALL') {
+      html += '<button class="jtool" data-jaction="rename">Rename</button>' +
+              '<button class="jtool jtool--danger" data-jaction="delete">Delete</button>';
+    }
+    el.journalSwitch.innerHTML = html;
   }
 
   function saveTrades() {
@@ -154,12 +341,13 @@
      4. RENDER: STAT CARDS
   ---------------------------------------------------------- */
   function renderStats() {
-    const total = trades.length;
-    const wins = trades.filter((t) => t.result === 'WIN').length;
-    const losses = trades.filter((t) => t.result === 'LOSS').length;
+    const list = scopedTrades();
+    const total = list.length;
+    const wins = list.filter((t) => t.result === 'WIN').length;
+    const losses = list.filter((t) => t.result === 'LOSS').length;
     const decided = wins + losses; // BE excluded from win-rate denominator
     const winRate = decided > 0 ? (wins / decided) * 100 : 0;
-    const totalPL = trades.reduce((sum, t) => sum + (parseFloat(t.pl) || 0), 0);
+    const totalPL = list.reduce((sum, t) => sum + (parseFloat(t.pl) || 0), 0);
 
     el.statTotal.textContent = total;
     el.statWins.textContent = wins;
@@ -177,7 +365,7 @@
      5. RENDER: TABLE
   ---------------------------------------------------------- */
   function getFilteredSortedTrades() {
-    let list = trades.slice();
+    let list = scopedTrades().slice();
 
     if (ui.search.trim()) {
       const q = ui.search.trim().toLowerCase();
@@ -201,7 +389,7 @@
     const list = getFilteredSortedTrades();
     el.tbody.innerHTML = '';
 
-    el.emptyState.classList.toggle('is-visible', trades.length === 0);
+    el.emptyState.classList.toggle('is-visible', scopedTrades().length === 0);
 
     list.forEach((t) => {
       const tr = document.createElement('tr');
@@ -214,6 +402,7 @@
       tr.innerHTML = `
         <td class="num">${escapeHtml(t.date)}</td>
         <td><strong>${escapeHtml(t.pair)}</strong></td>
+        <td><span class="pill" style="background:${hexToRgba(journalColor(t.journal), 0.14)};color:${journalColor(t.journal)}">${escapeHtml(journalName(t.journal))}</span></td>
         <td><span class="pill ${dirClass}">${t.direction}</span></td>
         <td>${escapeHtml(t.setup || '—')}</td>
         <td class="num">${escapeHtml(t.timeframe)}</td>
@@ -256,6 +445,7 @@
      6. RENDER: EVERYTHING
   ---------------------------------------------------------- */
   function renderAll() {
+    renderJournalSwitch();
     renderStats();
     renderTable();
     renderCharts();
@@ -270,6 +460,8 @@
     el.modalTitle.textContent = 'Add Trade';
     el.form.reset();
     el.fId.value = '';
+    populateJournalSelect();
+    el.fJournal.value = ui.journal === 'ALL' ? journals[0].id : ui.journal;
     el.fDate.value = new Date().toISOString().slice(0, 10);
     el.fRR.value = '—';
     el.shotPreview.innerHTML = '';
@@ -285,6 +477,8 @@
 
     el.modalTitle.textContent = 'Edit Trade';
     el.fId.value = t.id;
+    populateJournalSelect();
+    el.fJournal.value = journalById(t.journal) ? t.journal : journals[0].id;
     el.fDate.value = t.date;
     // Pairs outside the preset list are shown via the "Other…" option
     const isPreset = Array.from(el.fPair.options).some((o) => o.value === t.pair && o.value !== 'OTHER');
@@ -347,6 +541,7 @@
 
     const tradeData = {
       id: editingId || cryptoRandomId(),
+      journal: el.fJournal.value,
       date: el.fDate.value,
       pair: getSelectedPair(),
       direction: el.fDirection.value,
@@ -410,8 +605,10 @@
 
   function requestClearAll() {
     deleteTargetId = null;
-    el.confirmTitle.textContent = 'Clear all trade data?';
-    el.confirmMessage.textContent = `This will permanently delete all ${trades.length} trade(s) from local storage. This action cannot be undone.`;
+    const n = scopedTrades().length;
+    const scopeName = ui.journal === 'ALL' ? 'ALL journals' : `the "${journalName(ui.journal)}" journal`;
+    el.confirmTitle.textContent = ui.journal === 'ALL' ? 'Clear ALL trade data?' : `Clear "${journalName(ui.journal)}" journal?`;
+    el.confirmMessage.textContent = `This will permanently delete ${n} trade(s) from ${scopeName}. This action cannot be undone.`;
     el.confirmOk.textContent = 'Clear All';
     el.confirmOk.dataset.mode = 'all';
     openOverlay(el.confirmOverlay);
@@ -420,10 +617,12 @@
   function handleConfirmOk() {
     const mode = el.confirmOk.dataset.mode;
     if (mode === 'all') {
-      trades = [];
+      trades = ui.journal === 'ALL' ? [] : trades.filter((t) => t.journal !== ui.journal);
       saveTrades();
       renderAll();
       showToast('All data cleared');
+    } else if (mode === 'journal' && journalTargetId) {
+      deleteJournal(journalTargetId);
     } else if (mode === 'single' && deleteTargetId) {
       trades = trades.filter((t) => t.id !== deleteTargetId);
       saveTrades();
@@ -467,17 +666,18 @@
   /* ----------------------------------------------------------
      13. CSV EXPORT / IMPORT
   ---------------------------------------------------------- */
-  const CSV_COLUMNS = ['id', 'date', 'pair', 'direction', 'setup', 'timeframe', 'entry', 'sl', 'tp', 'lot', 'result', 'pl', 'rr'];
+  const CSV_COLUMNS = ['id', 'journal', 'date', 'pair', 'direction', 'setup', 'timeframe', 'entry', 'sl', 'tp', 'lot', 'result', 'pl', 'rr'];
   // Note: screenshots (base64) are intentionally excluded from CSV to keep files lightweight & spreadsheet-friendly.
 
   function exportCSV() {
-    if (trades.length === 0) {
+    const list = scopedTrades();
+    if (list.length === 0) {
       showToast('No trades to export', true);
       return;
     }
     const header = CSV_COLUMNS.join(',');
-    const rows = trades.map((t) =>
-      CSV_COLUMNS.map((c) => csvEscape(t[c])).join(',')
+    const rows = list.map((t) =>
+      CSV_COLUMNS.map((c) => csvEscape(c === 'journal' ? journalName(t.journal) : t[c])).join(',')
     );
     const csv = [header, ...rows].join('\n');
 
@@ -485,7 +685,7 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `trading-journal-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `trading-journal-${ui.journal === 'ALL' ? 'all' : journalName(ui.journal).toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -543,6 +743,8 @@
 
           const trade = {
             id: obj.id && !trades.some((t) => t.id === obj.id) ? obj.id : cryptoRandomId(),
+            // CSV journal column (by name) wins; otherwise the journal you're viewing
+            journal: resolveImportJournal(obj.journal),
             date: obj.date || new Date().toISOString().slice(0, 10),
             pair: (obj.pair || 'EURUSD').toUpperCase(),
             direction: (obj.direction || 'BUY').toUpperCase(),
@@ -635,7 +837,7 @@
     const ctx = document.getElementById('equityChart');
     if (!ctx) return;
 
-    const chronological = trades.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+    const chronological = scopedTrades().slice().sort((a, b) => new Date(a.date) - new Date(b.date));
     let running = 0;
     const labels = [];
     const data = [];
@@ -675,9 +877,10 @@
     const ctx = document.getElementById('winLossChart');
     if (!ctx) return;
 
-    const wins = trades.filter((t) => t.result === 'WIN').length;
-    const losses = trades.filter((t) => t.result === 'LOSS').length;
-    const be = trades.filter((t) => t.result === 'BE').length;
+    const list = scopedTrades();
+    const wins = list.filter((t) => t.result === 'WIN').length;
+    const losses = list.filter((t) => t.result === 'LOSS').length;
+    const be = list.filter((t) => t.result === 'BE').length;
 
     if (winLossChart) winLossChart.destroy();
     winLossChart = new Chart(ctx, {
@@ -707,7 +910,7 @@
     if (!ctx) return;
 
     const byMonth = {};
-    trades.forEach((t) => {
+    scopedTrades().forEach((t) => {
       const d = new Date(t.date);
       if (isNaN(d)) return;
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -805,6 +1008,22 @@
     el.sortDate.addEventListener('change', (e) => { ui.dateSort = e.target.value; renderTable(); });
     el.btnClearAll.addEventListener('click', requestClearAll);
 
+    // journal switcher
+    el.journalSwitch.addEventListener('click', (e) => {
+      const act = e.target.closest('[data-jaction]');
+      if (act) {
+        if (act.dataset.jaction === 'new') openJournalDialog('new');
+        else if (act.dataset.jaction === 'rename') openJournalDialog('rename');
+        else if (act.dataset.jaction === 'delete') requestDeleteJournal();
+        return;
+      }
+      const tabBtn = e.target.closest('.jtab');
+      if (tabBtn) setJournal(tabBtn.dataset.journal);
+    });
+    $('#journalNameForm').addEventListener('submit', handleJournalNameSubmit);
+    $('#journalNameCancel').addEventListener('click', () => closeOverlay($('#journalNameOverlay')));
+    $('#journalNameOverlay').addEventListener('click', (e) => { if (e.target.id === 'journalNameOverlay') closeOverlay($('#journalNameOverlay')); });
+
     // import / export
     el.btnExport.addEventListener('click', exportCSV);
     el.btnImport.addEventListener('click', () => el.csvFileInput.click());
@@ -820,6 +1039,7 @@
       if (el.overlay.classList.contains('is-open')) closeModal();
       if (el.lightboxOverlay.classList.contains('is-open')) closeLightbox();
       if (el.confirmOverlay.classList.contains('is-open')) closeOverlay(el.confirmOverlay);
+      if ($('#journalNameOverlay').classList.contains('is-open')) closeOverlay($('#journalNameOverlay'));
     });
 
     setupNavTabs();

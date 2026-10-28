@@ -55,6 +55,10 @@
 
 <main class="app">
 
+  <!-- ============ JOURNAL SWITCHER (Indicator / Manual / All) ============ -->
+  <!-- tabs + tools are rendered by script.js (renderJournalSwitch) -->
+  <div class="journal-switch" id="journalSwitch" role="tablist" aria-label="Select journal"></div>
+
   <!-- ============ DASHBOARD: STAT CARDS ============ -->
   <section class="stats" id="viewDashboard">
     <div class="stat-card">
@@ -142,6 +146,7 @@
           <tr>
             <th>Date</th>
             <th>Pair</th>
+            <th>Journal</th>
             <th>Dir</th>
             <th>Setup</th>
             <th>TF</th>
@@ -205,6 +210,11 @@
       <input type="hidden" id="tradeId">
 
       <div class="form-grid">
+        <div class="form-field form-field--wide">
+          <label for="fJournal">Journal</label>
+          <select id="fJournal" required></select>
+        </div>
+
         <div class="form-field">
           <label for="fDate">Date</label>
           <input type="date" id="fDate" required>
@@ -321,6 +331,19 @@
       <button class="btn btn--danger" id="confirmOk">Delete</button>
     </div>
   </div>
+</div>
+
+<!-- ============ JOURNAL NAME DIALOG (new / rename) ============ -->
+<div class="confirm-overlay" id="journalNameOverlay">
+  <form class="confirm-box" id="journalNameForm">
+    <h3 id="journalNameTitle">New journal</h3>
+    <p>Give it any name you like, e.g. your indicator or strategy name.</p>
+    <input type="text" id="journalNameInput" class="name-input" maxlength="24" placeholder="e.g. Gold Sniper v2" required>
+    <div class="confirm-actions">
+      <button type="button" class="btn btn--ghost" id="journalNameCancel">Cancel</button>
+      <button type="submit" class="btn btn--primary" id="journalNameOk">Create</button>
+    </div>
+  </form>
 </div>
 
 <!-- ============ TOAST ============ -->

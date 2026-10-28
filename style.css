@@ -520,3 +520,62 @@ body{
 ::-webkit-scrollbar-track{ background: transparent; }
 ::-webkit-scrollbar-thumb{ background: rgba(148,163,184,0.18); border-radius: 10px; border: 2px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover{ background: rgba(148,163,184,0.3); background-clip: content-box; }
+
+
+/* =========================================================
+   JOURNAL SWITCHER (Indicator / Manual / All)
+   ========================================================= */
+.journal-switch{
+  display: inline-flex; gap: 4px; flex-wrap: wrap;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  padding: 4px; border-radius: var(--radius-md);
+  margin-bottom: 18px;
+}
+.jtab{
+  display: inline-flex; align-items: center; gap: 8px;
+  border: none; background: transparent; color: var(--text-secondary);
+  font-family: var(--font-ui); font-size: 13px; font-weight: 600;
+  padding: 8px 14px; border-radius: 8px; cursor: pointer;
+  transition: color .2s var(--ease), background .2s var(--ease);
+}
+.jtab:hover{ color: var(--text-primary); }
+.jtab__dot{ width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.jtab--ind .jtab__dot{ background: var(--purple); }
+.jtab--man .jtab__dot{ background: var(--blue); }
+.jtab--all .jtab__dot{ background: var(--amber); }
+.jtab__count{
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  background: rgba(255,255,255,0.06); color: var(--text-secondary);
+  padding: 2px 7px; border-radius: 999px;
+}
+.jtab.is-active{ background: var(--bg-panel-solid); color: var(--text-primary); box-shadow: 0 1px 0 var(--border-strong) inset; }
+.jtab--ind.is-active{ box-shadow: 0 -2px 0 var(--purple) inset; }
+.jtab--man.is-active{ box-shadow: 0 -2px 0 var(--blue) inset; }
+.jtab--all.is-active{ box-shadow: 0 -2px 0 var(--amber) inset; }
+
+.pill--ind{ background: var(--purple-dim); color: var(--purple); }
+.pill--man{ background: var(--blue-dim); color: var(--blue); }
+
+
+/* ---- custom (user-named) journals ---- */
+.journal-switch{ display: flex; flex-wrap: wrap; align-items: center; width: fit-content; max-width: 100%; }
+.jtab__dot{ background: var(--jc, var(--text-dim)); }
+.jtab.is-active{ box-shadow: 0 -2px 0 var(--jc, var(--amber)) inset; }
+.jsep{ width: 1px; height: 20px; background: var(--border-strong); margin: 0 6px; }
+.jtool{
+  border: none; background: transparent; color: var(--text-dim);
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+  padding: 7px 10px; border-radius: 8px; cursor: pointer;
+  transition: color .2s var(--ease), background .2s var(--ease);
+}
+.jtool:hover{ color: var(--text-primary); background: var(--bg-input); }
+.jtool--danger:hover{ color: var(--red); background: var(--red-dim); }
+
+.name-input{
+  width: 100%; margin: 4px 0 18px;
+  background: var(--bg-input); border: 1px solid var(--border-strong);
+  color: var(--text-primary); font-family: var(--font-ui); font-size: 14px;
+  padding: 11px 13px; border-radius: var(--radius-sm); outline: none;
+}
+.name-input:focus{ border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-dim); }

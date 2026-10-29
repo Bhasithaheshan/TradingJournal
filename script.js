@@ -86,6 +86,9 @@
     fTP4: $('#fTP4'),
     fTPHit: $('#fTPHit'),
     fLot: $('#fLot'),
+    fContract: $('#fContract'),
+    plHint: $('#plHint'),
+    btnRecalcPL: $('#btnRecalcPL'),
     fResult: $('#fResult'),
     fPL: $('#fPL'),
     fRR: $('#fRR'),
@@ -843,6 +846,9 @@
     el.fRR.value = '—';
     el.shotPreview.innerHTML = '';
     togglePairOther();
+    plManual = false;
+    el.fContract.value = defaultContractSize(getSelectedPair()) || '';
+    updateAutoPL();
     openOverlay(el.overlay);
   }
 
@@ -877,6 +883,13 @@
     el.fResult.value = t.result;
     el.fPL.value = t.pl;
     el.fRR.value = fmtRR(t.rr);
+    el.fContract.value = defaultContractSize(t.pair) || '';
+    {
+      const auto = calcAutoPL();
+      // a stored P/L that differs from the formula was typed by hand: don't overwrite it
+      plManual = !(auto.pl !== null && Math.abs(auto.pl - parseFloat(t.pl)) < 0.01);
+      updatePLHint(auto);
+    }
 
     el.shotPreview.innerHTML = t.screenshot
       ? `<img src="${t.screenshot}" alt="Current screenshot">`
@@ -905,6 +918,68 @@
     return el.fPair.value === 'OTHER'
       ? el.fPairOther.value.trim().toUpperCase().replace(/\s+/g, '')
       : el.fPair.value;
+  }
+
+  /* ----------------------------------------------------------
+     AUTO P/L  (entry, exit = TP or SL, lot, contract size)
+     P/L = price move in your favour x contract size x lots
+     Contract size = units per 1 lot (gold: 100 oz).  Brokers differ for
+     BTC / indices, so the field stays editable.
+  ---------------------------------------------------------- */
+  const CONTRACT_SIZES = {
+    GOLD: 100, XAUUSD: 100,
+    EURUSD: 100000, GBPUSD: 100000, AUDUSD: 100000, NZDUSD: 100000,
+    BTCUSD: 1, US30: 1,
+  };
+  let plManual = false; // true once P/L was typed by hand (auto stops overwriting it)
+
+  function defaultContractSize(pair) {
+    return CONTRACT_SIZES[String(pair || '').toUpperCase()] || null;
+  }
+
+  function calcAutoPL() {
+    const entry = parseFloat(el.fEntry.value);
+    const lot = parseFloat(el.fLot.value);
+    const size = parseFloat(el.fContract.value);
+    const result = el.fResult.value;
+
+    if (result === 'BE') return { pl: 0, hint: 'Break-even: $0' };
+    if (!Number.isFinite(entry) || !Number.isFinite(lot)) return { pl: null, hint: 'Enter entry and lot size to auto-calculate.' };
+    if (!(size > 0)) return { pl: null, hint: 'Enter the contract size (units per lot) to auto-calculate.' };
+
+    let exit, label;
+    if (result === 'LOSS') {
+      exit = parseFloat(el.fSL.value);
+      label = 'SL';
+    } else {
+      const hit = parseTpHit(el.fTPHit.value);
+      const n = hit && hit >= 1 ? hit : 1; // no TP tracked -> TP1
+      exit = parseFloat([null, el.fTP, el.fTP2, el.fTP3, el.fTP4][n].value);
+      label = 'TP' + n;
+    }
+    if (!Number.isFinite(exit)) return { pl: null, hint: `Enter the ${label} price to auto-calculate.` };
+
+    const dir = el.fDirection.value;
+    const move = dir === 'SELL' ? entry - exit : exit - entry;
+    const pl = Math.round(move * size * lot * 100) / 100;
+    return { pl, hint: `${dir} ${entry} to ${label} ${exit} x ${size} units/lot x ${lot} lot` };
+  }
+
+  function updatePLHint(r) {
+    el.plHint.textContent = plManual ? 'Manual value. Click "auto" to recalculate.' : (r && r.hint) || '';
+  }
+
+  function updateAutoPL() {
+    const r = calcAutoPL();
+    if (!plManual) el.fPL.value = r.pl === null ? '' : r.pl;
+    updatePLHint(r);
+  }
+
+  function syncContractFromPair(force) {
+    const d = defaultContractSize(getSelectedPair());
+    if (d) el.fContract.value = d;
+    else if (force) el.fContract.value = '';
+    updateAutoPL();
   }
 
   function updateRRPreview() {
@@ -1495,6 +1570,16 @@
       if (el.confirmOverlay.classList.contains('is-open')) closeOverlay(el.confirmOverlay);
       if ($('#journalNameOverlay').classList.contains('is-open')) closeOverlay($('#journalNameOverlay'));
     });
+
+    // auto P/L
+    [el.fEntry, el.fSL, el.fTP, el.fTP2, el.fTP3, el.fTP4, el.fLot, el.fContract]
+      .forEach((input) => input.addEventListener('input', updateAutoPL));
+    [el.fDirection, el.fResult, el.fTPHit]
+      .forEach((sel) => sel.addEventListener('change', updateAutoPL));
+    el.fPair.addEventListener('change', () => syncContractFromPair(true));
+    el.fPairOther.addEventListener('input', () => syncContractFromPair(false));
+    el.fPL.addEventListener('input', () => { plManual = true; updatePLHint(null); });
+    el.btnRecalcPL.addEventListener('click', () => { plManual = false; updateAutoPL(); });
 
     // cloud: login / logout / one-time upload of old local data
     $('#authForm').addEventListener('submit', (e) => { e.preventDefault(); handleAuth('signin'); });

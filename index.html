@@ -316,6 +316,11 @@
           <input type="number" id="fLot" step="any" required>
         </div>
 
+        <div class="form-field">
+          <label for="fContract">Contract size <span class="auto-tag">units / lot</span></label>
+          <input type="number" id="fContract" step="any" min="0" placeholder="100 for gold">
+        </div>
+
         <div class="form-field form-field--wide">
           <label for="fTPHit">Highest target hit <span class="auto-tag">for TP stats</span></label>
           <select id="fTPHit">
@@ -338,8 +343,9 @@
         </div>
 
         <div class="form-field">
-          <label for="fPL">P/L ($)</label>
+          <label for="fPL">P/L ($) <button type="button" class="link-btn" id="btnRecalcPL" title="Recalculate automatically">&#8635; auto</button></label>
           <input type="number" id="fPL" step="any" placeholder="-50 or 120" required>
+          <small class="field-hint" id="plHint"></small>
         </div>
 
         <div class="form-field">

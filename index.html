@@ -44,6 +44,10 @@
       <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 5a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H6a1 1 0 1 1 0-2h5V6a1 1 0 0 1 1-1z"/></svg>
       <span>Add Trade</span>
     </button>
+    <button class="btn btn--ghost" id="btnLogout" title="Log out">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M10 3a1 1 0 0 1 0 2H6v14h4a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5zm6.3 4.3a1 1 0 0 1 1.4 0l4 4a1 1 0 0 1 0 1.4l-4 4a1 1 0 0 1-1.4-1.4l2.3-2.3H10a1 1 0 1 1 0-2h8.6l-2.3-2.3a1 1 0 0 1 0-1.4z"/></svg>
+      <span>Log out</span>
+    </button>
   </div>
 
   <button class="navbar__burger" id="btnBurger" aria-label="Toggle menu">
@@ -54,6 +58,15 @@
 <input type="file" id="csvFileInput" accept=".csv" hidden>
 
 <main class="app">
+
+  <!-- one-time: upload trades that were saved in this browser's local storage -->
+  <div class="migrate-banner" id="migrateBanner" hidden>
+    <span id="migrateText"></span>
+    <div class="migrate-banner__actions">
+      <button class="btn btn--primary btn--sm" id="btnMigrate">Upload to cloud</button>
+      <button class="btn btn--ghost btn--sm" id="btnMigrateDismiss">Not now</button>
+    </div>
+  </div>
 
   <!-- ============ JOURNAL SWITCHER (Indicator / Manual / All) ============ -->
   <!-- tabs + tools are rendered by script.js (renderJournalSwitch) -->
@@ -333,6 +346,30 @@
   </div>
 </div>
 
+<!-- ============ LOGIN / SIGN UP ============ -->
+<div class="auth-overlay is-open" id="authOverlay">
+  <div class="auth-card">
+    <div class="auth-card__brand"><span>&#9670;</span> Journal</div>
+
+    <div id="authSetup" hidden>
+      <h3>One-time setup needed</h3>
+      <p id="authSetupText">Open <code>supabase-config.js</code>, paste your Supabase Project URL and anon key, then refresh this page.</p>
+    </div>
+
+    <form id="authForm">
+      <h3>Sign in to your journal</h3>
+      <p>Your trades are saved in the cloud, so you can open them from any device.</p>
+      <input type="email" id="authEmail" class="name-input" placeholder="Email" autocomplete="email" required>
+      <input type="password" id="authPassword" class="name-input" placeholder="Password (min 6 characters)" autocomplete="current-password" minlength="6" required>
+      <div class="auth-msg" id="authMsg" role="alert"></div>
+      <div class="auth-actions">
+        <button type="submit" class="btn btn--primary" id="btnSignIn">Sign in</button>
+        <button type="button" class="btn btn--ghost" id="btnSignUp">Create account</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ============ JOURNAL NAME DIALOG (new / rename) ============ -->
 <div class="confirm-overlay" id="journalNameOverlay">
   <form class="confirm-box" id="journalNameForm">
@@ -354,6 +391,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"
         onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';s.onload=function(){document.dispatchEvent(new Event('chartjsready'));};s.onerror=function(){document.dispatchEvent(new Event('chartjsfailed'));};document.head.appendChild(s);"
         onload="document.dispatchEvent(new Event('chartjsready'));"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
+<script src="supabase-config.js"></script>
 <script src="script.js"></script>
 </body>
 </html>

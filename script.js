@@ -31,7 +31,7 @@
   };
 
   let editingId = null;         // id of trade currently being edited, or null when adding
-  let pendingScreenshot = null; // base64 string staged from file input before save
+  let pendingShotBlob = null;   // compressed image staged from the file input before save
   let deleteTargetId = null;    // id staged for deletion, awaiting confirm dialog
   let equityChart, winLossChart, monthlyChart; // Chart.js instances
 
@@ -117,82 +117,347 @@
   /* ----------------------------------------------------------
      2. STORAGE HELPERS
   ---------------------------------------------------------- */
-  function loadTrades() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      trades = raw ? JSON.parse(raw) : [];
-    } catch (e) {
-      console.error('Failed to load trades from localStorage', e);
-      trades = [];
+  const CFG = window.TJ_CONFIG || {};
+  const SHOTS_BUCKET = 'screenshots';
+  const MIGRATED_KEY = 'tj_migrated_v1';
+  const SIGNED_URL_SECONDS = 60 * 60 * 24;
+  let sb = null;          // Supabase client
+  let currentUser = null; // signed-in user
+  let unsavedJournals = []; // journals created while importing a CSV, saved right after
+
+  function errMsg(e) { return (e && e.message) ? e.message : String(e); }
+
+  function newId() {
+    if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+      const r = (Math.random() * 16) | 0;
+      return (ch === 'x' ? r : (r & 3) | 8).toString(16);
+    });
+  }
+
+  /* ----- row <-> object mapping (database uses snake_case) ----- */
+  function rowToJournal(r) { return { id: r.id, name: r.name, color: r.color || '#2f6bff' }; }
+
+  function rowToTrade(r) {
+    return {
+      id: r.id,
+      journal: r.journal_id,
+      date: r.trade_date,
+      pair: r.pair,
+      direction: r.direction,
+      setup: r.setup || '',
+      timeframe: r.timeframe,
+      entry: Number(r.entry),
+      sl: Number(r.sl),
+      tp: Number(r.tp),
+      lot: Number(r.lot),
+      result: r.result,
+      pl: Number(r.pl),
+      rr: r.rr === null || r.rr === undefined ? null : Number(r.rr),
+      screenshotPath: r.screenshot_path || null,
+      screenshot: null, // filled with a signed URL after loading
+    };
+  }
+
+  function tradeToRow(t) {
+    return {
+      id: t.id,
+      user_id: currentUser.id,
+      journal_id: t.journal,
+      trade_date: t.date,
+      pair: t.pair,
+      direction: t.direction,
+      setup: t.setup || '',
+      timeframe: t.timeframe,
+      entry: t.entry,
+      sl: t.sl,
+      tp: t.tp,
+      lot: t.lot,
+      result: t.result,
+      pl: t.pl,
+      rr: t.rr === undefined || (typeof t.rr === 'number' && isNaN(t.rr)) ? null : t.rr,
+      screenshot_path: t.screenshotPath || null,
+    };
+  }
+
+  /* ----- remote reads / writes ----- */
+  async function fetchAll(table, orderCol) {
+    const out = [];
+    const size = 1000; // Supabase returns at most 1000 rows per request, so page through
+    for (let from = 0; ; from += size) {
+      const { data, error } = await sb.from(table).select('*')
+        .order(orderCol, { ascending: true }).order('id', { ascending: true })
+        .range(from, from + size - 1);
+      if (error) throw error;
+      out.push(...data);
+      if (data.length < size) break;
     }
+    return out;
+  }
 
-    loadJournals();
+  async function upsertJournalRemote(j) {
+    const { error } = await sb.from('journals').upsert({ id: j.id, user_id: currentUser.id, name: j.name, color: j.color });
+    if (error) throw error;
+  }
 
+  async function attachScreenshotUrls(list) {
+    const withShots = list.filter((t) => t.screenshotPath);
+    for (let i = 0; i < withShots.length; i += 100) {
+      const chunk = withShots.slice(i, i + 100);
+      const { data, error } = await sb.storage.from(SHOTS_BUCKET)
+        .createSignedUrls(chunk.map((t) => t.screenshotPath), SIGNED_URL_SECONDS);
+      if (error) { console.error('Could not sign screenshot URLs', error); return; }
+      const map = {};
+      data.forEach((d) => { if (d.path && d.signedUrl) map[d.path] = d.signedUrl; });
+      chunk.forEach((t) => { t.screenshot = map[t.screenshotPath] || null; });
+    }
+  }
+
+  async function deleteTradesRemote(list) {
+    if (!list.length) return;
+    const ids = list.map((t) => t.id);
+    for (let i = 0; i < ids.length; i += 100) {
+      const { error } = await sb.from('trades').delete().in('id', ids.slice(i, i + 100));
+      if (error) throw error;
+    }
+    const paths = list.filter((t) => t.screenshotPath).map((t) => t.screenshotPath);
+    if (paths.length) {
+      const { error } = await sb.storage.from(SHOTS_BUCKET).remove(paths);
+      if (error) console.warn('Screenshot cleanup failed', error);
+    }
+  }
+
+  /** Load everything for the signed-in user. */
+  async function loadAll() {
+    const [jRows, tRows] = await Promise.all([fetchAll('journals', 'created_at'), fetchAll('trades', 'trade_date')]);
+    journals = jRows.map(rowToJournal);
+    trades = tRows.map(rowToTrade);
+
+    if (journals.length === 0) {
+      const main = { id: newId(), name: 'Main', color: nextJournalColor() };
+      await upsertJournalRemote(main);
+      journals.push(main);
+    }
+    await attachScreenshotUrls(trades);
+
+    ui.journal = 'ALL';
     try {
       const saved = localStorage.getItem(JOURNAL_KEY);
-      if (saved === 'ALL' || journalById(saved)) ui.journal = saved;
+      if (saved && journalById(saved)) ui.journal = saved;
     } catch (e) { /* ignore */ }
   }
 
-  /* ----- journal helpers ----- */
-  function saveJournals() {
+  /* ----- image compression (keeps screenshots small & fast) ----- */
+  function compressImage(file, maxDim = 1600, quality = 0.82) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Image compression failed'))), 'image/jpeg', quality);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read that image')); };
+      img.src = url;
+    });
+  }
+
+  async function uploadScreenshot(tradeId, blob) {
+    const path = `${currentUser.id}/${tradeId}.jpg`;
+    const { error } = await sb.storage.from(SHOTS_BUCKET).upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
+    if (error) throw error;
+    const { data, error: e2 } = await sb.storage.from(SHOTS_BUCKET).createSignedUrl(path, SIGNED_URL_SECONDS);
+    if (e2) throw e2;
+    return { path, url: data.signedUrl };
+  }
+
+  /* ----------------------------------------------------------
+     2b. AUTH (email + password)
+  ---------------------------------------------------------- */
+  function setAuthMessage(text, isInfo) {
+    const m = $('#authMsg');
+    m.textContent = text || '';
+    m.classList.toggle('is-info', !!isInfo);
+  }
+
+  function showAuth(state, setupText) {
+    $('#authSetup').hidden = state !== 'setup';
+    $('#authForm').hidden = state === 'setup';
+    if (setupText) $('#authSetupText').textContent = setupText;
+    setAuthMessage('');
+    openOverlay($('#authOverlay'));
+  }
+
+  function setAuthBusy(busy) {
+    $('#btnSignIn').disabled = busy;
+    $('#btnSignUp').disabled = busy;
+  }
+
+  async function handleAuth(mode) {
+    const email = $('#authEmail').value.trim();
+    const password = $('#authPassword').value;
+    if (!email || password.length < 6) {
+      setAuthMessage('Enter your email and a password (at least 6 characters).');
+      return;
+    }
+    setAuthBusy(true);
+    setAuthMessage('');
     try {
-      localStorage.setItem(JOURNALS_KEY, JSON.stringify(journals));
-    } catch (e) {
-      showToast('Storage error: could not save journals', true);
+      if (mode === 'signup') {
+        const { data, error } = await sb.auth.signUp({ email, password });
+        if (error) throw error;
+        if (data.session) await onSignedIn(data.session.user);
+        else setAuthMessage('Account created. Check your email to confirm it, then sign in.', true);
+      } else {
+        const { data, error } = await sb.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        await onSignedIn(data.user);
+      }
+    } catch (err) {
+      setAuthMessage(errMsg(err));
+    } finally {
+      setAuthBusy(false);
     }
   }
-  function newJournalId() { return 'j_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); }
+
+  async function onSignedIn(user) {
+    currentUser = user;
+    $('#authPassword').value = '';
+    closeOverlay($('#authOverlay'));
+    $('#btnLogout').title = user.email ? `Log out (${user.email})` : 'Log out';
+    try {
+      await loadAll();
+    } catch (err) {
+      console.error(err);
+      showToast('Could not load data: ' + errMsg(err) + ' (did you run the SQL setup?)', true);
+    }
+    renderAll();
+    checkLocalData();
+  }
+
+  async function handleLogout() {
+    try { await sb.auth.signOut(); } catch (e) { console.error(e); }
+    resetAfterSignOut();
+  }
+
+  function resetAfterSignOut() {
+    currentUser = null;
+    trades = [];
+    journals = [];
+    ui.journal = 'ALL';
+    $('#migrateBanner').hidden = true;
+    renderAll();
+    showAuth('login');
+  }
+
+  /* ----------------------------------------------------------
+     2c. ONE-TIME MIGRATION: browser local storage -> cloud
+  ---------------------------------------------------------- */
+  function readLocalLegacy() {
+    try {
+      const t = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      return Array.isArray(t) ? t : [];
+    } catch (e) { return []; }
+  }
+
+  function checkLocalData() {
+    let done = false;
+    try { done = localStorage.getItem(MIGRATED_KEY) === '1'; } catch (e) { /* ignore */ }
+    const n = readLocalLegacy().length;
+    const show = n > 0 && !done;
+    $('#migrateBanner').hidden = !show;
+    if (show) $('#migrateText').textContent = `Found ${n} trade(s) saved in this browser (old local storage). Upload them to your cloud journal?`;
+  }
+
+  async function migrateLocalData() {
+    const local = readLocalLegacy();
+    if (!local.length || !currentUser) return;
+    const btn = $('#btnMigrate');
+    btn.disabled = true;
+    try {
+      let localJournals = [];
+      try { localJournals = JSON.parse(localStorage.getItem(JOURNALS_KEY) || '[]'); } catch (e) { /* ignore */ }
+      const legacyNames = { INDICATOR: 'Indicator', MANUAL: 'Manual' };
+      const nameFor = (jid) => {
+        const lj = Array.isArray(localJournals) ? localJournals.find((j) => j.id === jid) : null;
+        return lj ? lj.name : (legacyNames[jid] || 'Main');
+      };
+
+      const byName = {};
+      journals.forEach((j) => { byName[j.name.toLowerCase()] = j.id; });
+      const ensureJournal = async (name) => {
+        const key = name.toLowerCase();
+        if (byName[key]) return byName[key];
+        const j = { id: newId(), name: name.slice(0, 24), color: nextJournalColor() };
+        await upsertJournalRemote(j);
+        journals.push(j);
+        byName[key] = j.id;
+        return j.id;
+      };
+
+      // phase 1: build rows (and upload screenshots)
+      const rows = [];
+      for (let i = 0; i < local.length; i++) {
+        const t = local[i];
+        const id = newId();
+        const entry = parseFloat(t.entry), sl = parseFloat(t.sl), tp = parseFloat(t.tp);
+        const trade = {
+          id,
+          journal: await ensureJournal(nameFor(t.journal)),
+          date: t.date,
+          pair: t.pair,
+          direction: t.direction,
+          setup: t.setup || '',
+          timeframe: t.timeframe,
+          entry, sl, tp,
+          lot: parseFloat(t.lot) || 0,
+          result: t.result,
+          pl: parseFloat(t.pl) || 0,
+          rr: typeof t.rr === 'number' && !isNaN(t.rr) ? t.rr : calcRR(entry, sl, tp),
+          screenshotPath: null,
+        };
+        if (t.screenshot && String(t.screenshot).startsWith('data:')) {
+          try {
+            const raw = await (await fetch(t.screenshot)).blob();
+            const small = await compressImage(raw);
+            trade.screenshotPath = (await uploadScreenshot(id, small)).path;
+          } catch (e) { console.warn('Screenshot skipped for a trade', e); }
+        }
+        rows.push(tradeToRow(trade));
+        showToast(`Preparing ${i + 1}/${local.length}…`);
+      }
+
+      // phase 2: insert in chunks
+      for (let i = 0; i < rows.length; i += 200) {
+        const { error } = await sb.from('trades').insert(rows.slice(i, i + 200));
+        if (error) throw error;
+      }
+
+      try { localStorage.setItem(MIGRATED_KEY, '1'); } catch (e) { /* ignore */ }
+      await loadAll();
+      renderAll();
+      checkLocalData();
+      showToast(`Uploaded ${rows.length} trade(s) to the cloud`);
+    } catch (err) {
+      console.error(err);
+      showToast('Upload failed: ' + errMsg(err), true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  /* ----- journal helpers ----- */
   function nextJournalColor() { return JOURNAL_COLORS[journals.length % JOURNAL_COLORS.length]; }
   function journalById(id) { return journals.find((j) => j.id === id) || null; }
   function journalName(id) { const j = journalById(id); return j ? j.name : '—'; }
   function journalColor(id) { const j = journalById(id); return j ? j.color : '#8b93a8'; }
-
-  function loadJournals() {
-    try {
-      const raw = localStorage.getItem(JOURNALS_KEY);
-      journals = raw ? JSON.parse(raw) : [];
-    } catch (e) { journals = []; }
-    if (!Array.isArray(journals)) journals = [];
-
-    let journalsChanged = false;
-    let tradesChanged = false;
-
-    // First run with custom journals: rebuild from whatever the trades already use
-    // (this also picks up the earlier fixed "INDICATOR" / "MANUAL" values).
-    if (journals.length === 0) {
-      const legacyNames = { INDICATOR: 'Indicator', MANUAL: 'Manual' };
-      trades.forEach((t) => {
-        if (t.journal && !journalById(t.journal)) {
-          journals.push({ id: t.journal, name: legacyNames[t.journal] || String(t.journal), color: nextJournalColor() });
-          journalsChanged = true;
-        }
-      });
-    }
-
-    // Trades with no journal (or an unknown one) go into "Main"
-    trades.forEach((t) => {
-      if (!journalById(t.journal)) {
-        let main = journals.find((j) => j.name === 'Main');
-        if (!main) {
-          main = { id: newJournalId(), name: 'Main', color: nextJournalColor() };
-          journals.push(main);
-          journalsChanged = true;
-        }
-        t.journal = main.id;
-        tradesChanged = true;
-      }
-    });
-
-    // There must always be at least one journal
-    if (journals.length === 0) {
-      journals.push({ id: newJournalId(), name: 'Main', color: nextJournalColor() });
-      journalsChanged = true;
-    }
-
-    if (journalsChanged) saveJournals();
-    if (tradesChanged) saveTrades();
-  }
 
   function populateJournalSelect() {
     el.fJournal.innerHTML = journals
@@ -211,7 +476,7 @@
     setTimeout(() => { input.focus(); input.select(); }, 50);
   }
 
-  function handleJournalNameSubmit(e) {
+  async function handleJournalNameSubmit(e) {
     e.preventDefault();
     const name = $('#journalNameInput').value.trim();
     if (!name) return;
@@ -220,18 +485,25 @@
     if (clash) { showToast('A journal with that name already exists', true); return; }
 
     closeOverlay($('#journalNameOverlay'));
-    if (journalDialogMode === 'rename') {
-      const j = journalById(ui.journal);
-      if (j) j.name = name;
-      saveJournals();
-      renderAll();
-      showToast('Journal renamed');
-    } else {
-      const j = { id: newJournalId(), name, color: nextJournalColor() };
-      journals.push(j);
-      saveJournals();
-      setJournal(j.id);
-      showToast(`Journal "${name}" created`);
+    try {
+      if (journalDialogMode === 'rename') {
+        const j = journalById(ui.journal);
+        if (j) {
+          await upsertJournalRemote({ ...j, name });
+          j.name = name;
+        }
+        renderAll();
+        showToast('Journal renamed');
+      } else {
+        const j = { id: newId(), name, color: nextJournalColor() };
+        await upsertJournalRemote(j);
+        journals.push(j);
+        setJournal(j.id);
+        showToast(`Journal "${name}" created`);
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('Could not save journal: ' + errMsg(err), true);
     }
   }
 
@@ -248,25 +520,27 @@
     openOverlay(el.confirmOverlay);
   }
 
-  function deleteJournal(id) {
+  async function deleteJournal(id) {
+    const victims = trades.filter((t) => t.journal === id);
+    await deleteTradesRemote(victims);
+    const { error } = await sb.from('journals').delete().eq('id', id);
+    if (error) throw error;
     trades = trades.filter((t) => t.journal !== id);
     journals = journals.filter((j) => j.id !== id);
-    saveTrades();
-    saveJournals();
     journalTargetId = null;
     setJournal('ALL');
     showToast('Journal deleted');
   }
 
-  /** CSV import: match a journal by name (case-insensitive) or create it. */
+  /** CSV import: match a journal by name (case-insensitive) or create it (saved right after parsing). */
   function resolveImportJournal(name) {
     const clean = (name || '').trim();
     if (clean) {
       let j = journals.find((x) => x.name.toLowerCase() === clean.toLowerCase());
       if (!j) {
-        j = { id: newJournalId(), name: clean.slice(0, 24), color: nextJournalColor() };
+        j = { id: newId(), name: clean.slice(0, 24), color: nextJournalColor() };
         journals.push(j);
-        saveJournals();
+        unsavedJournals.push(j);
       }
       return j.id;
     }
@@ -301,15 +575,6 @@
               '<button class="jtool jtool--danger" data-jaction="delete">Delete</button>';
     }
     el.journalSwitch.innerHTML = html;
-  }
-
-  function saveTrades() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(trades));
-    } catch (e) {
-      console.error('Failed to save trades to localStorage', e);
-      showToast('Storage error: could not save data', true);
-    }
   }
 
   /* ----------------------------------------------------------
@@ -456,7 +721,7 @@
   ---------------------------------------------------------- */
   function openAddModal() {
     editingId = null;
-    pendingScreenshot = null;
+    pendingShotBlob = null;
     el.modalTitle.textContent = 'Add Trade';
     el.form.reset();
     el.fId.value = '';
@@ -473,7 +738,7 @@
     const t = trades.find((x) => x.id === id);
     if (!t) return;
     editingId = id;
-    pendingScreenshot = t.screenshot || null;
+    pendingShotBlob = null;
 
     el.modalTitle.textContent = 'Edit Trade';
     el.fId.value = t.id;
@@ -507,7 +772,7 @@
   function closeModal() {
     closeOverlay(el.overlay);
     editingId = null;
-    pendingScreenshot = null;
+    pendingShotBlob = null;
   }
 
   /** Show the custom-pair input only when "Other…" is selected. */
@@ -531,16 +796,20 @@
     el.fRR.value = fmtRR(rr);
   }
 
-  function handleFormSubmit(e) {
+  let savingTrade = false;
+
+  async function handleFormSubmit(e) {
     e.preventDefault();
+    if (savingTrade) return;
 
     const entry = parseFloat(el.fEntry.value);
     const sl = parseFloat(el.fSL.value);
     const tp = parseFloat(el.fTP.value);
     const rr = calcRR(entry, sl, tp);
 
+    const existing = editingId ? trades.find((t) => t.id === editingId) : null;
     const tradeData = {
-      id: editingId || cryptoRandomId(),
+      id: editingId || newId(),
       journal: el.fJournal.value,
       date: el.fDate.value,
       pair: getSelectedPair(),
@@ -552,43 +821,61 @@
       result: el.fResult.value,
       pl: parseFloat(el.fPL.value),
       rr,
-      screenshot: pendingScreenshot,
+      screenshot: existing ? existing.screenshot : null,
+      screenshotPath: existing ? existing.screenshotPath : null,
     };
 
-    if (editingId) {
-      const idx = trades.findIndex((t) => t.id === editingId);
-      if (idx > -1) trades[idx] = tradeData;
-      showToast('Trade updated');
-    } else {
-      trades.push(tradeData);
-      showToast('Trade added');
+    const saveBtn = $('#btnSaveTrade');
+    savingTrade = true;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      if (pendingShotBlob) {
+        const up = await uploadScreenshot(tradeData.id, pendingShotBlob);
+        tradeData.screenshotPath = up.path;
+        tradeData.screenshot = up.url;
+      }
+      const { error } = await sb.from('trades').upsert(tradeToRow(tradeData));
+      if (error) throw error;
+
+      if (existing) {
+        const idx = trades.findIndex((t) => t.id === editingId);
+        if (idx > -1) trades[idx] = tradeData;
+        showToast('Trade updated');
+      } else {
+        trades.push(tradeData);
+        showToast('Trade added');
+      }
+      renderAll();
+      closeModal();
+    } catch (err) {
+      console.error(err);
+      showToast('Could not save trade: ' + errMsg(err), true);
+    } finally {
+      savingTrade = false;
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save Trade';
     }
-
-    saveTrades();
-    renderAll();
-    closeModal();
-  }
-
-  function cryptoRandomId() {
-    return 'tr_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
   }
 
   /* ----------------------------------------------------------
      8. SCREENSHOT UPLOAD
   ---------------------------------------------------------- */
-  function handleScreenshotChange(e) {
+  async function handleScreenshotChange(e) {
     const file = e.target.files[0];
     if (!file) return;
     if (!file.type.startsWith('image/')) {
       showToast('Please select an image file', true);
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      pendingScreenshot = reader.result;
-      el.shotPreview.innerHTML = `<img src="${pendingScreenshot}" alt="Screenshot preview">`;
-    };
-    reader.readAsDataURL(file);
+    try {
+      pendingShotBlob = await compressImage(file);
+      const url = URL.createObjectURL(pendingShotBlob);
+      el.shotPreview.innerHTML = `<img src="${url}" alt="Screenshot preview">`;
+    } catch (err) {
+      pendingShotBlob = null;
+      showToast(errMsg(err), true);
+    }
   }
 
   /* ----------------------------------------------------------
@@ -614,20 +901,31 @@
     openOverlay(el.confirmOverlay);
   }
 
-  function handleConfirmOk() {
+  async function handleConfirmOk() {
     const mode = el.confirmOk.dataset.mode;
-    if (mode === 'all') {
-      trades = ui.journal === 'ALL' ? [] : trades.filter((t) => t.journal !== ui.journal);
-      saveTrades();
-      renderAll();
-      showToast('All data cleared');
-    } else if (mode === 'journal' && journalTargetId) {
-      deleteJournal(journalTargetId);
-    } else if (mode === 'single' && deleteTargetId) {
-      trades = trades.filter((t) => t.id !== deleteTargetId);
-      saveTrades();
-      renderAll();
-      showToast('Trade deleted');
+    el.confirmOk.disabled = true;
+    try {
+      if (mode === 'all') {
+        const victims = scopedTrades().slice();
+        await deleteTradesRemote(victims);
+        const gone = new Set(victims.map((t) => t.id));
+        trades = trades.filter((t) => !gone.has(t.id));
+        renderAll();
+        showToast('All data cleared');
+      } else if (mode === 'journal' && journalTargetId) {
+        await deleteJournal(journalTargetId);
+      } else if (mode === 'single' && deleteTargetId) {
+        const t = trades.find((x) => x.id === deleteTargetId);
+        if (t) await deleteTradesRemote([t]);
+        trades = trades.filter((x) => x.id !== deleteTargetId);
+        renderAll();
+        showToast('Trade deleted');
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('Delete failed: ' + errMsg(err), true);
+    } finally {
+      el.confirmOk.disabled = false;
     }
     deleteTargetId = null;
     closeOverlay(el.confirmOverlay);
@@ -660,7 +958,7 @@
     el.toast.classList.toggle('toast--error', !!isError);
     el.toast.classList.add('is-visible');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.toast.classList.remove('is-visible'), 2400);
+    toastTimer = setTimeout(() => el.toast.classList.remove('is-visible'), isError ? 6000 : 2400);
   }
 
   /* ----------------------------------------------------------
@@ -724,7 +1022,8 @@
 
   function importCSV(file) {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
+      unsavedJournals = [];
       try {
         const rows = parseCSV(String(reader.result));
         if (rows.length < 2) { showToast('CSV appears empty', true); return; }
@@ -732,7 +1031,8 @@
         const header = rows[0].map((h) => h.trim().toLowerCase());
         const dataRows = rows.slice(1);
 
-        let imported = 0;
+        const fresh = [];
+        let skipped = 0;
         dataRows.forEach((r) => {
           const obj = {};
           header.forEach((h, idx) => { obj[h] = r[idx]; });
@@ -740,33 +1040,50 @@
           const entry = parseFloat(obj.entry);
           const sl = parseFloat(obj.sl);
           const tp = parseFloat(obj.tp);
+          const date = obj.date || new Date().toISOString().slice(0, 10);
+          const direction = (obj.direction || 'BUY').toUpperCase();
+          const result = (obj.result || 'WIN').toUpperCase();
 
-          const trade = {
-            id: obj.id && !trades.some((t) => t.id === obj.id) ? obj.id : cryptoRandomId(),
+          // skip rows the database would reject
+          if (![entry, sl, tp].every(Number.isFinite) || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+              !['BUY', 'SELL'].includes(direction) || !['WIN', 'LOSS', 'BE'].includes(result)) {
+            skipped++;
+            return;
+          }
+
+          fresh.push({
+            id: newId(),
             // CSV journal column (by name) wins; otherwise the journal you're viewing
             journal: resolveImportJournal(obj.journal),
-            date: obj.date || new Date().toISOString().slice(0, 10),
+            date,
             pair: (obj.pair || 'EURUSD').toUpperCase(),
-            direction: (obj.direction || 'BUY').toUpperCase(),
+            direction,
             setup: obj.setup || '',
             timeframe: obj.timeframe || '1H',
             entry, sl, tp,
             lot: parseFloat(obj.lot) || 0,
-            result: (obj.result || 'WIN').toUpperCase(),
+            result,
             pl: parseFloat(obj.pl) || 0,
             rr: obj.rr && !isNaN(parseFloat(obj.rr)) ? parseFloat(obj.rr) : calcRR(entry, sl, tp),
             screenshot: null,
-          };
-          trades.push(trade);
-          imported++;
+            screenshotPath: null,
+          });
         });
 
-        saveTrades();
+        showToast('Importing…');
+        for (const j of unsavedJournals) await upsertJournalRemote(j);
+        for (let i = 0; i < fresh.length; i += 200) {
+          const { error } = await sb.from('trades').insert(fresh.slice(i, i + 200).map(tradeToRow));
+          if (error) throw error;
+        }
+        unsavedJournals = [];
+        trades.push(...fresh);
         renderAll();
-        showToast(`Imported ${imported} trade(s)`);
+        showToast(`Imported ${fresh.length} trade(s)` + (skipped ? ` (${skipped} invalid row(s) skipped)` : ''));
       } catch (err) {
         console.error(err);
-        showToast('Failed to import CSV', true);
+        showToast('Failed to import CSV: ' + errMsg(err), true);
+        try { await loadAll(); renderAll(); } catch (e2) { /* ignore */ }
       }
     };
     reader.readAsText(file);
@@ -1042,16 +1359,46 @@
       if ($('#journalNameOverlay').classList.contains('is-open')) closeOverlay($('#journalNameOverlay'));
     });
 
+    // cloud: login / logout / one-time upload of old local data
+    $('#authForm').addEventListener('submit', (e) => { e.preventDefault(); handleAuth('signin'); });
+    $('#btnSignUp').addEventListener('click', () => handleAuth('signup'));
+    $('#btnLogout').addEventListener('click', handleLogout);
+    $('#btnMigrate').addEventListener('click', migrateLocalData);
+    $('#btnMigrateDismiss').addEventListener('click', () => { $('#migrateBanner').hidden = true; });
+
     setupNavTabs();
   }
 
   /* ----------------------------------------------------------
      17. INIT
   ---------------------------------------------------------- */
-  function init() {
-    loadTrades();
+  async function init() {
     wireEvents();
     renderAll();
+
+    const cfgText = `${CFG.SUPABASE_URL || ''}${CFG.SUPABASE_ANON_KEY || ''}`;
+    if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY || /YOUR-/.test(cfgText)) {
+      showAuth('setup');
+      return;
+    }
+    if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+      showAuth('setup', 'The Supabase library could not load (blocked network or ad-blocker?). Check your connection and refresh.');
+      return;
+    }
+
+    sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
+    sb.auth.onAuthStateChange((event) => {
+      // signed out from another tab, or the session could not be refreshed
+      if (event === 'SIGNED_OUT' && currentUser) resetAfterSignOut();
+    });
+
+    try {
+      const { data } = await sb.auth.getSession();
+      if (data && data.session) { await onSignedIn(data.session.user); return; }
+    } catch (err) {
+      console.error(err);
+    }
+    showAuth('login');
   }
 
   document.addEventListener('DOMContentLoaded', init);

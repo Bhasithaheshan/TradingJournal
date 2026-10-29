@@ -168,6 +168,7 @@
             <th>TP</th>
             <th>Lot</th>
             <th>Result</th>
+            <th>TP Hit</th>
             <th>P/L</th>
             <th>RR</th>
             <th>Shot</th>
@@ -205,6 +206,12 @@
       <div class="chart-card chart-card--wide">
         <h3>Monthly Profit</h3>
         <div class="chart-canvas-wrap"><canvas id="monthlyChart"></canvas></div>
+      </div>
+
+      <div class="chart-card chart-card--wide" id="tpStatsCard">
+        <h3>TP Hit Rates <span class="auto-tag" id="tpStatsNote"></span></h3>
+        <div class="tp-stats" id="tpStatsBody"></div>
+        <div class="chart-canvas-wrap" id="tpChartWrap"><canvas id="tpChart"></canvas></div>
       </div>
     </div>
   </section>
@@ -285,13 +292,40 @@
         </div>
 
         <div class="form-field">
-          <label for="fTP">Take Profit</label>
+          <label for="fTP">TP1 <span class="auto-tag">take profit</span></label>
           <input type="number" id="fTP" step="any" required>
+        </div>
+
+        <div class="form-field">
+          <label for="fTP2">TP2 <span class="auto-tag">optional</span></label>
+          <input type="number" id="fTP2" step="any">
+        </div>
+
+        <div class="form-field">
+          <label for="fTP3">TP3 <span class="auto-tag">optional</span></label>
+          <input type="number" id="fTP3" step="any">
+        </div>
+
+        <div class="form-field">
+          <label for="fTP4">TP4 <span class="auto-tag">optional</span></label>
+          <input type="number" id="fTP4" step="any">
         </div>
 
         <div class="form-field">
           <label for="fLot">Lot Size</label>
           <input type="number" id="fLot" step="any" required>
+        </div>
+
+        <div class="form-field form-field--wide">
+          <label for="fTPHit">Highest target hit <span class="auto-tag">for TP stats</span></label>
+          <select id="fTPHit">
+            <option value="">Not tracked (single-TP trade)</option>
+            <option value="0">SL hit before TP1</option>
+            <option value="1">TP1 hit</option>
+            <option value="2">TP2 hit</option>
+            <option value="3">TP3 hit</option>
+            <option value="4">TP4 hit</option>
+          </select>
         </div>
 
         <div class="form-field">

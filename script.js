@@ -33,7 +33,7 @@
   let editingId = null;         // id of trade currently being edited, or null when adding
   let pendingShotBlob = null;   // compressed image staged from the file input before save
   let deleteTargetId = null;    // id staged for deletion, awaiting confirm dialog
-  let equityChart, winLossChart, monthlyChart; // Chart.js instances
+  let equityChart, winLossChart, monthlyChart, tpChart; // Chart.js instances
 
   /* ----------------------------------------------------------
      1. DOM REFERENCES
@@ -81,6 +81,10 @@
     fEntry: $('#fEntry'),
     fSL: $('#fSL'),
     fTP: $('#fTP'),
+    fTP2: $('#fTP2'),
+    fTP3: $('#fTP3'),
+    fTP4: $('#fTP4'),
+    fTPHit: $('#fTPHit'),
     fLot: $('#fLot'),
     fResult: $('#fResult'),
     fPL: $('#fPL'),
@@ -150,6 +154,10 @@
       entry: Number(r.entry),
       sl: Number(r.sl),
       tp: Number(r.tp),
+      tp2: r.tp2 === null || r.tp2 === undefined ? null : Number(r.tp2),
+      tp3: r.tp3 === null || r.tp3 === undefined ? null : Number(r.tp3),
+      tp4: r.tp4 === null || r.tp4 === undefined ? null : Number(r.tp4),
+      tpHit: r.tp_hit === null || r.tp_hit === undefined ? null : Number(r.tp_hit),
       lot: Number(r.lot),
       result: r.result,
       pl: Number(r.pl),
@@ -172,6 +180,10 @@
       entry: t.entry,
       sl: t.sl,
       tp: t.tp,
+      tp2: t.tp2 === undefined ? null : t.tp2,
+      tp3: t.tp3 === undefined ? null : t.tp3,
+      tp4: t.tp4 === undefined ? null : t.tp4,
+      tp_hit: t.tpHit === undefined ? null : t.tpHit,
       lot: t.lot,
       result: t.result,
       pl: t.pl,
@@ -676,6 +688,7 @@
         <td class="num">${escapeHtml(String(t.tp))}</td>
         <td class="num">${escapeHtml(String(t.lot))}</td>
         <td><span class="pill ${resultClass}">${t.result}</span></td>
+        <td>${tpHitPill(t.tpHit)}</td>
         <td class="${plClass}">${fmtMoney(pl)}</td>
         <td class="num">${fmtRR(t.rr)}</td>
         <td>${t.screenshot ? `<img class="shot-thumb" src="${t.screenshot}" data-id="${t.id}" alt="Screenshot">` : '<span class="shot-none">—</span>'}</td>
@@ -700,6 +713,104 @@
     $$('.shot-thumb').forEach((img) => img.addEventListener('click', () => openLightbox(img.src)));
   }
 
+  /** Optional number from an input/CSV cell: '' -> null. */
+  function optNum(v) {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /** 'Highest target hit' from an input/CSV cell: '' -> null, else integer 0-4. */
+  function parseTpHit(v) {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    const n = parseInt(v, 10);
+    return Number.isInteger(n) && n >= 0 && n <= 4 ? n : null;
+  }
+
+  function tpHitPill(hit) {
+    if (hit === null || hit === undefined) return '<span class="pill pill--none">—</span>';
+    if (hit === 0) return '<span class="pill pill--loss">SL</span>';
+    return `<span class="pill pill--tp">TP${hit}</span>`;
+  }
+
+  /** TP hit-rate numbers for a list of trades (only trades with a tracked outcome count). */
+  function computeTpStats(list) {
+    const tracked = list.filter((t) => t.tpHit !== null && t.tpHit !== undefined);
+    const total = tracked.length;
+    const reached = [1, 2, 3, 4].map((k) => tracked.filter((t) => t.tpHit >= k).length);
+    const sl = tracked.filter((t) => t.tpHit === 0).length;
+    return { total, reached, sl };
+  }
+
+  function pct(n, d) { return d > 0 ? (n / d) * 100 : 0; }
+
+  function renderTpStats() {
+    const body = $('#tpStatsBody');
+    if (!body) return;
+    const { total, reached, sl } = computeTpStats(scopedTrades());
+    $('#tpStatsNote').textContent = total ? `${total} tracked trade${total === 1 ? '' : 's'}` : '';
+
+    if (total === 0) {
+      body.innerHTML = '<div class="tp-empty">No multi-TP trades in this view yet. When you add a trade, set <strong>Highest target hit</strong> (SL before TP1, or TP1 to TP4) to see how often each target gets hit.</div>';
+      return;
+    }
+
+    const row = (label, count, share, vsPrev, red) => `
+      <tr>
+        <td><strong>${label}</strong></td>
+        <td class="num">${count}</td>
+        <td class="num"><span class="tp-bar${red ? ' tp-bar--red' : ''}" style="width:${Math.round(share * 0.8)}px"></span>${share.toFixed(1)}%</td>
+        <td class="num">${vsPrev}</td>
+      </tr>`;
+
+    const rows = [row('Signal trades', total, 100, '—', false)];
+    reached.forEach((n, i) => {
+      const vsPrev = i === 0 ? '—' : (reached[i - 1] > 0 ? pct(n, reached[i - 1]).toFixed(1) + '%' : '—');
+      rows.push(row(`TP${i + 1} hit`, n, pct(n, total), vsPrev, false));
+    });
+    rows.push(row('SL before TP1', sl, pct(sl, total), '—', true));
+
+    body.innerHTML = `
+      <table class="tp-table">
+        <thead><tr><th>Target</th><th>Count</th><th>% of signals</th><th>vs previous TP</th></tr></thead>
+        <tbody>${rows.join('')}</tbody>
+      </table>`;
+  }
+
+  function renderTpChart() {
+    const ctx = document.getElementById('tpChart');
+    if (!ctx) return;
+    const { total, reached, sl } = computeTpStats(scopedTrades());
+    $('#tpChartWrap').style.display = total ? '' : 'none';
+    if (tpChart) { tpChart.destroy(); tpChart = null; }
+    if (!total) return;
+
+    const counts = [...reached, sl];
+    const values = counts.map((n) => Number(pct(n, total).toFixed(1)));
+    tpChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: ['TP1', 'TP2', 'TP3', 'TP4', 'SL before TP1'],
+        datasets: [{
+          data: values,
+          backgroundColor: [CHART_COLORS.green, CHART_COLORS.green, CHART_COLORS.green, CHART_COLORS.green, CHART_COLORS.red],
+          borderRadius: 5,
+          maxBarThickness: 46,
+        }],
+      },
+      options: baseChartOptions({
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (c) => `${c.parsed.y}% (${counts[c.dataIndex]} of ${total} trades)` } },
+        },
+        scales: {
+          x: { grid: { color: CHART_COLORS.grid }, ticks: { color: CHART_COLORS.text, font: { family: 'Inter', size: 11 } } },
+          y: { min: 0, max: 100, grid: { color: CHART_COLORS.grid }, ticks: { color: CHART_COLORS.text, font: { family: 'JetBrains Mono', size: 11 }, callback: (v) => v + '%' } },
+        },
+      }),
+    });
+  }
+
   function escapeHtml(str) {
     const d = document.createElement('div');
     d.textContent = str ?? '';
@@ -713,6 +824,7 @@
     renderJournalSwitch();
     renderStats();
     renderTable();
+    renderTpStats();
     renderCharts();
   }
 
@@ -757,6 +869,10 @@
     el.fEntry.value = t.entry;
     el.fSL.value = t.sl;
     el.fTP.value = t.tp;
+    el.fTP2.value = t.tp2 === null || t.tp2 === undefined ? '' : t.tp2;
+    el.fTP3.value = t.tp3 === null || t.tp3 === undefined ? '' : t.tp3;
+    el.fTP4.value = t.tp4 === null || t.tp4 === undefined ? '' : t.tp4;
+    el.fTPHit.value = t.tpHit === null || t.tpHit === undefined ? '' : String(t.tpHit);
     el.fLot.value = t.lot;
     el.fResult.value = t.result;
     el.fPL.value = t.pl;
@@ -817,6 +933,10 @@
       setup: el.fSetup.value.trim(),
       timeframe: el.fTimeframe.value,
       entry, sl, tp,
+      tp2: optNum(el.fTP2.value),
+      tp3: optNum(el.fTP3.value),
+      tp4: optNum(el.fTP4.value),
+      tpHit: parseTpHit(el.fTPHit.value),
       lot: parseFloat(el.fLot.value),
       result: el.fResult.value,
       pl: parseFloat(el.fPL.value),
@@ -964,7 +1084,7 @@
   /* ----------------------------------------------------------
      13. CSV EXPORT / IMPORT
   ---------------------------------------------------------- */
-  const CSV_COLUMNS = ['id', 'journal', 'date', 'pair', 'direction', 'setup', 'timeframe', 'entry', 'sl', 'tp', 'lot', 'result', 'pl', 'rr'];
+  const CSV_COLUMNS = ['id', 'journal', 'date', 'pair', 'direction', 'setup', 'timeframe', 'entry', 'sl', 'tp', 'tp2', 'tp3', 'tp4', 'tphit', 'lot', 'result', 'pl', 'rr'];
   // Note: screenshots (base64) are intentionally excluded from CSV to keep files lightweight & spreadsheet-friendly.
 
   function exportCSV() {
@@ -975,7 +1095,7 @@
     }
     const header = CSV_COLUMNS.join(',');
     const rows = list.map((t) =>
-      CSV_COLUMNS.map((c) => csvEscape(c === 'journal' ? journalName(t.journal) : t[c])).join(',')
+      CSV_COLUMNS.map((c) => csvEscape(csvValue(t, c))).join(',')
     );
     const csv = [header, ...rows].join('\n');
 
@@ -989,6 +1109,13 @@
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     showToast('CSV exported');
+  }
+
+  function csvValue(t, col) {
+    if (col === 'journal') return journalName(t.journal);
+    if (col === 'tphit') return t.tpHit === null || t.tpHit === undefined ? '' : t.tpHit;
+    const v = t[col];
+    return v === null || v === undefined ? '' : v;
   }
 
   function csvEscape(val) {
@@ -1061,6 +1188,10 @@
             setup: obj.setup || '',
             timeframe: obj.timeframe || '1H',
             entry, sl, tp,
+            tp2: optNum(obj.tp2),
+            tp3: optNum(obj.tp3),
+            tp4: optNum(obj.tp4),
+            tpHit: parseTpHit(obj.tphit),
             lot: parseFloat(obj.lot) || 0,
             result,
             pl: parseFloat(obj.pl) || 0,
@@ -1128,6 +1259,7 @@
       renderEquityChart();
       renderWinLossChart();
       renderMonthlyChart();
+      renderTpChart();
     } catch (err) {
       // A chart error should never take down the rest of the app (table,
       // stats, modals must keep working even if charting fails).
@@ -1306,6 +1438,11 @@
 
     // live RR preview
     [el.fEntry, el.fSL, el.fTP].forEach((input) => input.addEventListener('input', updateRRPreview));
+    el.fTPHit.addEventListener('change', () => {
+      const hit = parseTpHit(el.fTPHit.value);
+      if (hit === 0) el.fResult.value = 'LOSS';
+      else if (hit !== null) el.fResult.value = 'WIN';
+    });
 
     // screenshot
     el.fScreenshot.addEventListener('change', handleScreenshotChange);

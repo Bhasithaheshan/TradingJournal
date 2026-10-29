@@ -619,3 +619,19 @@ body{
 }
 .migrate-banner[hidden]{ display: none; }
 .migrate-banner__actions{ display: flex; gap: 8px; }
+
+
+/* =========================================================
+   TP HIT RATES
+   ========================================================= */
+.tp-stats{ overflow-x: auto; margin-bottom: 16px; }
+.tp-table{ width: 100%; border-collapse: collapse; font-size: 13px; }
+.tp-table th, .tp-table td{ padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.tp-table th{ font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); font-weight: 600; }
+.tp-table td.num{ font-family: var(--font-mono); }
+.tp-table tr:last-child td{ border-bottom: none; }
+.tp-bar{ display: inline-block; height: 6px; border-radius: 3px; background: var(--green); vertical-align: middle; margin-right: 8px; }
+.tp-bar--red{ background: var(--red); }
+.tp-empty{ color: var(--text-dim); font-size: 13px; line-height: 1.6; padding: 6px 0 14px; }
+.pill--tp{ background: var(--green-dim); color: var(--green); }
+.pill--none{ background: transparent; color: var(--text-dim); }
